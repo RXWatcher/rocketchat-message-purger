@@ -256,6 +256,73 @@ func TestMessageModeFindsAgainAfterEachDelete(t *testing.T) {
 	}
 }
 
+func TestMessageModeRestartsScanAfterDeleteSoShiftedMessagesAreNotSkipped(t *testing.T) {
+	offsets := []int{}
+	deleted := map[string]bool{}
+	client := &fakeClient{
+		listMessagesFn: func(room rocketchat.Room, options rocketchat.ListMessagesOptions) ([]rocketchat.Message, rocketchat.Page, error) {
+			offsets = append(offsets, options.Offset)
+			if !deleted["m2"] {
+				switch options.Offset {
+				case 0:
+					return []rocketchat.Message{
+						{ID: "other-1", RoomID: "r1", UserID: "someone-else"},
+						{ID: "other-2", RoomID: "r1", UserID: "someone-else"},
+					}, rocketchat.Page{Offset: options.Offset, Count: 2, Total: 4}, nil
+				case 2:
+					return []rocketchat.Message{
+						{ID: "m2", RoomID: "r1", UserID: "user-123"},
+						{ID: "m3", RoomID: "r1", UserID: "user-123"},
+					}, rocketchat.Page{Offset: options.Offset, Count: 2, Total: 4}, nil
+				}
+			}
+			if !deleted["m3"] {
+				switch options.Offset {
+				case 0:
+					return []rocketchat.Message{
+						{ID: "other-1", RoomID: "r1", UserID: "someone-else"},
+						{ID: "other-2", RoomID: "r1", UserID: "someone-else"},
+					}, rocketchat.Page{Offset: options.Offset, Count: 2, Total: 3}, nil
+				case 2:
+					return []rocketchat.Message{
+						{ID: "m3", RoomID: "r1", UserID: "user-123"},
+					}, rocketchat.Page{Offset: options.Offset, Count: 1, Total: 3}, nil
+				}
+			}
+			switch options.Offset {
+			case 0:
+				return []rocketchat.Message{
+					{ID: "other-1", RoomID: "r1", UserID: "someone-else"},
+					{ID: "other-2", RoomID: "r1", UserID: "someone-else"},
+				}, rocketchat.Page{Offset: options.Offset, Count: 2, Total: 2}, nil
+			default:
+				return nil, rocketchat.Page{Offset: options.Offset, Count: 0, Total: 2}, nil
+			}
+		},
+		deleteFn: func(roomID string, msgID string) error {
+			deleted[msgID] = true
+			return nil
+		},
+	}
+
+	summary, err := Run(context.Background(), client, cfg(func(c *config.Config) {
+		c.Mode = "messages"
+		c.DryRun = false
+		c.ConfirmPurge = true
+		c.PageSize = 2
+	}), time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if summary.MessagesDeleted != 2 {
+		t.Fatalf("summary = %#v", summary)
+	}
+	if strings.Join(intsToStrings(offsets), ",") != "0,2,0,2,0" {
+		t.Fatalf("offsets = %#v", offsets)
+	}
+}
+
 func TestMessageModeRecordsDeleteFailuresAndContinues(t *testing.T) {
 	client := &fakeClient{
 		messages: []rocketchat.Message{

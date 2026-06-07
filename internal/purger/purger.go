@@ -210,6 +210,7 @@ func purgeMessagesInRoom(ctx context.Context, client Client, cfg config.Config, 
 		}
 
 		if deletedFromPage {
+			offset = 0
 			continue
 		}
 		if len(pageMessages) == 0 || len(pageMessages) < pageSize {
