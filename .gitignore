@@ -1,0 +1,10 @@
+.DS_Store
+node_modules/
+dist/
+/rocketchat-message-purger
+bin/
+coverage.out
+.env
+.env.*
+!.env.example
+purger.json

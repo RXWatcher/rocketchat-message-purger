@@ -1,0 +1,19 @@
+{
+  "url": "https://chat.example.com",
+  "user_id": "your-user-id",
+  "token": "your-personal-access-token",
+  "room": ["general"],
+  "all": false,
+  "mode": "history",
+  "exclude_room": [],
+  "exclude_dms": false,
+  "include_discussions": false,
+  "include_threads": false,
+  "preserve_pinned": false,
+  "page_size": 100,
+  "max_messages": 0,
+  "verbose": false,
+  "debug": false,
+  "concurrency": 1,
+  "timeout_ms": 30000
+}
