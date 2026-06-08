@@ -174,7 +174,7 @@ Verbose message deletion output:
 go run ./cmd/rocketchat-message-purger --room general --mode messages --max-messages 10 --verbose --confirm-purge
 ```
 
-`--verbose` streams scan progress, then `deleting message ...` and `deleted message ...` lines as each message delete runs. Message mode works as a find/delete cycle: find one of your messages, delete it, then query again for the next one. Use `--mode messages`; the default `history` mode uses Rocket.Chat's room history cleanup endpoint and does not delete one message at a time.
+`--verbose` streams scan progress, then `deleting message ...` and `deleted message ...` lines as each message delete runs. Message mode works as a find/delete cycle: find one of your messages, delete it, verify Rocket.Chat no longer returns that message ID, then query again for the next one. Use `--mode messages`; the default `history` mode uses Rocket.Chat's room history cleanup endpoint and does not delete one message at a time.
 
 All accessible channels and private rooms, excluding direct messages:
 

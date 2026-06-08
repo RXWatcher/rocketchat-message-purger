@@ -184,6 +184,26 @@ func (c *Client) DeleteMessage(ctx context.Context, roomID string, messageID str
 	return c.request(ctx, http.MethodPost, "/api/v1/chat.delete", body, &response)
 }
 
+func (c *Client) MessageExists(ctx context.Context, messageID string) (bool, error) {
+	query := url.Values{}
+	query.Set("msgId", messageID)
+	var response struct {
+		Success bool     `json:"success"`
+		Error   string   `json:"error,omitempty"`
+		Message *Message `json:"message,omitempty"`
+		Status  string   `json:"status,omitempty"`
+	}
+	err := c.request(ctx, http.MethodGet, "/api/v1/chat.getMessage?"+query.Encode(), nil, &response)
+	if err != nil {
+		apiErr, ok := err.(*APIError)
+		if ok && apiErr.StatusCode == http.StatusBadRequest {
+			return false, nil
+		}
+		return false, err
+	}
+	return response.Success && response.Message != nil && response.Message.ID != "", nil
+}
+
 func historyEndpoint(room Room) (string, error) {
 	switch room.Type {
 	case "c":

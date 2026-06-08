@@ -26,13 +26,14 @@ type cleanCall struct {
 }
 
 type fakeClient struct {
-	cleanFn        func(roomID string, options rocketchat.CleanRoomHistoryOptions) error
-	deleteFn       func(roomID string, msgID string) error
-	messages       []rocketchat.Message
-	calls          []cleanCall
-	deleteCalls    []deleteCall
-	listMessagesFn func(room rocketchat.Room, options rocketchat.ListMessagesOptions) ([]rocketchat.Message, rocketchat.Page, error)
-	mu             sync.Mutex
+	cleanFn         func(roomID string, options rocketchat.CleanRoomHistoryOptions) error
+	deleteFn        func(roomID string, msgID string) error
+	messageExistsFn func(msgID string) (bool, error)
+	messages        []rocketchat.Message
+	calls           []cleanCall
+	deleteCalls     []deleteCall
+	listMessagesFn  func(room rocketchat.Room, options rocketchat.ListMessagesOptions) ([]rocketchat.Message, rocketchat.Page, error)
+	mu              sync.Mutex
 }
 
 func (f *fakeClient) ListRooms(ctx context.Context) ([]rocketchat.Room, error) {
@@ -72,6 +73,13 @@ func (f *fakeClient) DeleteMessage(ctx context.Context, roomID string, msgID str
 		return f.deleteFn(roomID, msgID)
 	}
 	return nil
+}
+
+func (f *fakeClient) MessageExists(ctx context.Context, msgID string) (bool, error) {
+	if f.messageExistsFn != nil {
+		return f.messageExistsFn(msgID)
+	}
+	return false, nil
 }
 
 func (f *fakeClient) callCount() int {
@@ -351,6 +359,33 @@ func TestMessageModeRecordsDeleteFailuresAndContinues(t *testing.T) {
 	}
 	if summary.Results[0].Error != "delete denied" {
 		t.Fatalf("result = %#v", summary.Results[0])
+	}
+}
+
+func TestMessageModeFailsDeleteWhenMessageStillExistsAfterSuccess(t *testing.T) {
+	client := &fakeClient{
+		messages: []rocketchat.Message{
+			{ID: "m1", RoomID: "r1", UserID: "user-123"},
+		},
+		messageExistsFn: func(msgID string) (bool, error) {
+			return msgID == "m1", nil
+		},
+	}
+
+	summary, err := Run(context.Background(), client, cfg(func(c *config.Config) {
+		c.Mode = "messages"
+		c.DryRun = false
+		c.ConfirmPurge = true
+	}), time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if summary.MessagesDeleted != 0 || summary.MessagesFailed != 1 || summary.Failed != 1 {
+		t.Fatalf("summary = %#v", summary)
+	}
+	if !strings.Contains(summary.Results[0].Error, "still exists after delete") {
+		t.Fatalf("error = %q", summary.Results[0].Error)
 	}
 }
 

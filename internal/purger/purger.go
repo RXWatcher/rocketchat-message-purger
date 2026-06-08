@@ -25,6 +25,7 @@ type Client interface {
 	CleanRoomHistory(ctx context.Context, roomID string, options rocketchat.CleanRoomHistoryOptions) error
 	ListMessages(ctx context.Context, room rocketchat.Room, options rocketchat.ListMessagesOptions) ([]rocketchat.Message, rocketchat.Page, error)
 	DeleteMessage(ctx context.Context, roomID string, messageID string) error
+	MessageExists(ctx context.Context, messageID string) (bool, error)
 }
 
 type Result struct {
@@ -196,6 +197,22 @@ func purgeMessagesInRoom(ctx context.Context, client Client, cfg config.Config, 
 
 			printVerboseDelete(cfg, room, message.ID, "deleting", nil)
 			if err := client.DeleteMessage(ctx, room.ID, message.ID); err != nil {
+				result.MessagesFailed++
+				result.FailedMessageIDs = append(result.FailedMessageIDs, message.ID)
+				result.Error = err.Error()
+				printVerboseDelete(cfg, room, message.ID, "failed", err)
+				continue
+			}
+			exists, err := client.MessageExists(ctx, message.ID)
+			if err != nil {
+				result.MessagesFailed++
+				result.FailedMessageIDs = append(result.FailedMessageIDs, message.ID)
+				result.Error = err.Error()
+				printVerboseDelete(cfg, room, message.ID, "failed", err)
+				continue
+			}
+			if exists {
+				err := fmt.Errorf("message %s still exists after delete", message.ID)
 				result.MessagesFailed++
 				result.FailedMessageIDs = append(result.FailedMessageIDs, message.ID)
 				result.Error = err.Error()

@@ -174,6 +174,59 @@ func TestDeleteMessageUsesChatDelete(t *testing.T) {
 	assertBody(t, body, "asUser", true)
 }
 
+func TestMessageExistsUsesChatGetMessage(t *testing.T) {
+	var seenQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/chat.getMessage" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		seenQuery = r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"success":true,"message":{"_id":"message-1","rid":"room-1"}}`))
+	}))
+	defer server.Close()
+
+	client := New(ClientOptions{
+		BaseURL:   server.URL,
+		UserID:    "user-123",
+		AuthToken: "token-abc",
+		Timeout:   30 * time.Second,
+	})
+
+	exists, err := client.MessageExists(context.Background(), "message-1")
+	if err != nil {
+		t.Fatalf("MessageExists returned error: %v", err)
+	}
+	if !exists {
+		t.Fatalf("exists = false")
+	}
+	if !strings.Contains(seenQuery, "msgId=message-1") {
+		t.Fatalf("query = %q", seenQuery)
+	}
+}
+
+func TestMessageExistsReturnsFalseForMissingMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"success":false}`))
+	}))
+	defer server.Close()
+
+	client := New(ClientOptions{
+		BaseURL:   server.URL,
+		UserID:    "user-123",
+		AuthToken: "token-abc",
+		Timeout:   30 * time.Second,
+	})
+
+	exists, err := client.MessageExists(context.Background(), "message-1")
+	if err != nil {
+		t.Fatalf("MessageExists returned error: %v", err)
+	}
+	if exists {
+		t.Fatalf("exists = true")
+	}
+}
+
 func TestDebugLoggingShowsDeleteRequestAndResponseWithoutToken(t *testing.T) {
 	var debug bytes.Buffer
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
