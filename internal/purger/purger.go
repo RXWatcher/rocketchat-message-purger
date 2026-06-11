@@ -227,8 +227,11 @@ func purgeMessagesInRoom(ctx context.Context, client Client, cfg config.Config, 
 			break
 		}
 
+		// A delete shifts everything below it up one position, which can pull
+		// the next page's first message into this page. Re-fetching the same
+		// offset catches it; pages before this one are unaffected because the
+		// deleted message was the first own message found scanning forward.
 		if deletedFromPage {
-			offset = 0
 			continue
 		}
 		if len(pageMessages) == 0 || len(pageMessages) < pageSize {

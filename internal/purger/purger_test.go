@@ -342,7 +342,91 @@ func TestMessageModeFindsAgainAfterEachDelete(t *testing.T) {
 	}
 }
 
-func TestMessageModeRestartsScanAfterDeleteSoShiftedMessagesAreNotSkipped(t *testing.T) {
+func TestMessageModeResumesScanFromSamePageAfterDelete(t *testing.T) {
+	offsets := []int{}
+	deleted := map[string]bool{}
+	client := &fakeClient{
+		listMessagesFn: func(room rocketchat.Room, options rocketchat.ListMessagesOptions) ([]rocketchat.Message, rocketchat.Page, error) {
+			offsets = append(offsets, options.Offset)
+			switch {
+			case !deleted["m1"]:
+				switch options.Offset {
+				case 0:
+					return []rocketchat.Message{
+						{ID: "other-1", RoomID: "r1", UserID: "someone-else"},
+						{ID: "other-2", RoomID: "r1", UserID: "someone-else"},
+					}, rocketchat.Page{Offset: options.Offset, Count: 2, Total: 5}, nil
+				case 2:
+					return []rocketchat.Message{
+						{ID: "m1", RoomID: "r1", UserID: "user-123"},
+						{ID: "other-3", RoomID: "r1", UserID: "someone-else"},
+					}, rocketchat.Page{Offset: options.Offset, Count: 2, Total: 5}, nil
+				default:
+					return []rocketchat.Message{
+						{ID: "m2", RoomID: "r1", UserID: "user-123"},
+					}, rocketchat.Page{Offset: options.Offset, Count: 1, Total: 5}, nil
+				}
+			case !deleted["m2"]:
+				// m1 is gone: everything below it shifts up one position, so
+				// m2 moves from the third page into the second.
+				switch options.Offset {
+				case 0:
+					return []rocketchat.Message{
+						{ID: "other-1", RoomID: "r1", UserID: "someone-else"},
+						{ID: "other-2", RoomID: "r1", UserID: "someone-else"},
+					}, rocketchat.Page{Offset: options.Offset, Count: 2, Total: 4}, nil
+				case 2:
+					return []rocketchat.Message{
+						{ID: "other-3", RoomID: "r1", UserID: "someone-else"},
+						{ID: "m2", RoomID: "r1", UserID: "user-123"},
+					}, rocketchat.Page{Offset: options.Offset, Count: 2, Total: 4}, nil
+				default:
+					return nil, rocketchat.Page{Offset: options.Offset, Count: 0, Total: 4}, nil
+				}
+			default:
+				switch options.Offset {
+				case 0:
+					return []rocketchat.Message{
+						{ID: "other-1", RoomID: "r1", UserID: "someone-else"},
+						{ID: "other-2", RoomID: "r1", UserID: "someone-else"},
+					}, rocketchat.Page{Offset: options.Offset, Count: 2, Total: 3}, nil
+				case 2:
+					return []rocketchat.Message{
+						{ID: "other-3", RoomID: "r1", UserID: "someone-else"},
+					}, rocketchat.Page{Offset: options.Offset, Count: 1, Total: 3}, nil
+				default:
+					return nil, rocketchat.Page{Offset: options.Offset, Count: 0, Total: 3}, nil
+				}
+			}
+		},
+		deleteFn: func(roomID string, msgID string) error {
+			deleted[msgID] = true
+			return nil
+		},
+	}
+
+	summary, err := Run(context.Background(), client, cfg(func(c *config.Config) {
+		c.Mode = "messages"
+		c.DryRun = false
+		c.ConfirmPurge = true
+		c.PageSize = 2
+	}), time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if summary.MessagesDeleted != 2 {
+		t.Fatalf("summary = %#v", summary)
+	}
+	if !deleted["m1"] || !deleted["m2"] {
+		t.Fatalf("deleted = %#v, the shifted message must not be skipped", deleted)
+	}
+	if strings.Join(intsToStrings(offsets), ",") != "0,2,2,2" {
+		t.Fatalf("offsets = %#v, want resume from the deleted message's page, not offset 0", offsets)
+	}
+}
+
+func TestMessageModeDeletesConsecutiveOwnMessagesOnSamePage(t *testing.T) {
 	offsets := []int{}
 	deleted := map[string]bool{}
 	client := &fakeClient{
@@ -404,7 +488,7 @@ func TestMessageModeRestartsScanAfterDeleteSoShiftedMessagesAreNotSkipped(t *tes
 	if summary.MessagesDeleted != 2 {
 		t.Fatalf("summary = %#v", summary)
 	}
-	if strings.Join(intsToStrings(offsets), ",") != "0,2,0,2,0" {
+	if strings.Join(intsToStrings(offsets), ",") != "0,2,2,2" {
 		t.Fatalf("offsets = %#v", offsets)
 	}
 }
