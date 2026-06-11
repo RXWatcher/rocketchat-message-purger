@@ -142,6 +142,45 @@ func TestListMessagesUsesHistoryEndpointForRoomType(t *testing.T) {
 	}
 }
 
+func TestListMessagesOmitsShowDiscussionWhereUnsupported(t *testing.T) {
+	var seenQueries []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenQueries = append(seenQueries, r.URL.RawQuery)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"messages":[]}`))
+	}))
+	defer server.Close()
+
+	client := New(ClientOptions{
+		BaseURL:   server.URL,
+		UserID:    "user-123",
+		AuthToken: "token-abc",
+		Timeout:   30 * time.Second,
+	})
+
+	for _, roomType := range []string{"c", "p", "d"} {
+		_, _, err := client.ListMessages(context.Background(), Room{ID: "room-1", Type: roomType}, ListMessagesOptions{
+			Count:              10,
+			IncludeThreads:     true,
+			IncludeDiscussions: true,
+		})
+		if err != nil {
+			t.Fatalf("ListMessages(%s) returned error: %v", roomType, err)
+		}
+	}
+
+	for i, roomType := range []string{"c", "p", "d"} {
+		if !strings.Contains(seenQueries[i], "showThreadMessages=true") {
+			t.Fatalf("query[%s] missing showThreadMessages: %q", roomType, seenQueries[i])
+		}
+		wantDiscussion := roomType == "p"
+		hasDiscussion := strings.Contains(seenQueries[i], "showDiscussion=true")
+		if hasDiscussion != wantDiscussion {
+			t.Fatalf("query[%s] showDiscussion = %t, want %t (Rocket.Chat 7.x rejects it outside groups.history): %q", roomType, hasDiscussion, wantDiscussion, seenQueries[i])
+		}
+	}
+}
+
 func TestDeleteMessageUsesChatDelete(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

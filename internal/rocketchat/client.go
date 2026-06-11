@@ -159,7 +159,12 @@ func (c *Client) ListMessages(ctx context.Context, room Room, options ListMessag
 	if options.IncludeThreads {
 		query.Set("showThreadMessages", "true")
 	}
-	if options.IncludeDiscussions {
+	// Rocket.Chat 7.x validates history query params strictly and only
+	// groups.history accepts showDiscussion; channels.history and im.history
+	// reject the whole request with "must NOT have additional properties".
+	// Discussions are separate rooms returned by rooms.get, so their messages
+	// are still scanned as rooms of their own.
+	if options.IncludeDiscussions && room.Type == "p" {
 		query.Set("showDiscussion", "true")
 	}
 
