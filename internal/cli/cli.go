@@ -116,12 +116,19 @@ func printMessageResult(result purger.Result, label string, stdout io.Writer, st
 		fmt.Fprintf(stdout, "[skipped] %s: %s\n", label, result.Reason)
 		printVerboseMessages(result, label, stdout, stderr, verbose)
 	case purger.StatusDryRun:
-		fmt.Fprintf(stdout, "[dry-run] %s: %d messages\n", label, result.MessagesFound)
+		fmt.Fprintf(stdout, "[dry-run] %s: %d messages%s\n", label, result.MessagesFound, limitNote(result))
 		printVerboseMessages(result, label, stdout, stderr, verbose)
 	default:
-		fmt.Fprintf(stdout, "[%s] %s: %d deleted\n", result.Status, label, result.MessagesDeleted)
+		fmt.Fprintf(stdout, "[%s] %s: %d deleted%s\n", result.Status, label, result.MessagesDeleted, limitNote(result))
 		printVerboseMessages(result, label, stdout, stderr, verbose)
 	}
+}
+
+func limitNote(result purger.Result) string {
+	if !result.LimitReached {
+		return ""
+	}
+	return " (stopped at max-messages limit, more of your messages may remain)"
 }
 
 func printVerboseMessages(result purger.Result, label string, stdout io.Writer, stderr io.Writer, verbose bool) {

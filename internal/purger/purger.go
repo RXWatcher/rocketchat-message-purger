@@ -36,6 +36,7 @@ type Result struct {
 	MessagesFound     int
 	MessagesDeleted   int
 	MessagesFailed    int
+	LimitReached      bool
 	DeletedMessageIDs []string
 	FailedMessageIDs  []string
 }
@@ -242,6 +243,9 @@ func purgeMessagesInRoom(ctx context.Context, client Client, cfg config.Config, 
 		}
 	}
 
+	if cfg.MaxMessages > 0 && result.MessagesFound >= cfg.MaxMessages {
+		result.LimitReached = true
+	}
 	if result.MessagesFailed > 0 {
 		result.Status = StatusFailed
 	}
@@ -318,6 +322,9 @@ func roomTypeLabel(roomType string) string {
 func ownMessages(messages []rocketchat.Message, userID string) []rocketchat.Message {
 	own := make([]rocketchat.Message, 0, len(messages))
 	for _, message := range messages {
+		if message.Type == rocketchat.RemovedMessageType {
+			continue
+		}
 		authorID := message.UserID
 		if authorID == "" {
 			authorID = message.User.ID

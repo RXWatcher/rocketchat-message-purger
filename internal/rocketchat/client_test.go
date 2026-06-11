@@ -204,6 +204,28 @@ func TestMessageExistsUsesChatGetMessage(t *testing.T) {
 	}
 }
 
+func TestMessageExistsReturnsFalseForRemovedTombstone(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true,"message":{"_id":"message-1","rid":"room-1","t":"rm","msg":"","tcount":4}}`))
+	}))
+	defer server.Close()
+
+	client := New(ClientOptions{
+		BaseURL:   server.URL,
+		UserID:    "user-123",
+		AuthToken: "token-abc",
+		Timeout:   30 * time.Second,
+	})
+
+	exists, err := client.MessageExists(context.Background(), "message-1")
+	if err != nil {
+		t.Fatalf("MessageExists returned error: %v", err)
+	}
+	if exists {
+		t.Fatal("exists = true for a t=rm tombstone left after deleting a thread parent")
+	}
+}
+
 func TestMessageExistsReturnsFalseForMissingMessage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
@@ -224,6 +246,91 @@ func TestMessageExistsReturnsFalseForMissingMessage(t *testing.T) {
 	}
 	if exists {
 		t.Fatalf("exists = true")
+	}
+}
+
+func TestMessageExistsReturnsFalseForNoMessageFoundDetail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"success":false,"error":"No message found with the id of \"message-1\"."}`))
+	}))
+	defer server.Close()
+
+	client := New(ClientOptions{
+		BaseURL:   server.URL,
+		UserID:    "user-123",
+		AuthToken: "token-abc",
+		Timeout:   30 * time.Second,
+	})
+
+	exists, err := client.MessageExists(context.Background(), "message-1")
+	if err != nil {
+		t.Fatalf("MessageExists returned error: %v", err)
+	}
+	if exists {
+		t.Fatalf("exists = true")
+	}
+}
+
+func TestMessageExistsReturnsErrorForUnrelatedBadRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"success":false,"error":"The required \"msgId\" query param is missing."}`))
+	}))
+	defer server.Close()
+
+	client := New(ClientOptions{
+		BaseURL:   server.URL,
+		UserID:    "user-123",
+		AuthToken: "token-abc",
+		Timeout:   30 * time.Second,
+	})
+
+	exists, err := client.MessageExists(context.Background(), "message-1")
+	if err == nil {
+		t.Fatal("expected error for bad request unrelated to a missing message")
+	}
+	if exists {
+		t.Fatalf("exists = true")
+	}
+}
+
+func TestDeleteMessageFailsOnNonJSONSuccessStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body>maintenance</body></html>`))
+	}))
+	defer server.Close()
+
+	client := New(ClientOptions{
+		BaseURL:   server.URL,
+		UserID:    "user-123",
+		AuthToken: "token-abc",
+		Timeout:   30 * time.Second,
+	})
+
+	err := client.DeleteMessage(context.Background(), "room-1", "message-1")
+	if err == nil {
+		t.Fatal("expected error for non-JSON response body")
+	}
+}
+
+func TestDeleteMessageFailsWhenSuccessFieldMissing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"_id":"message-1"}}`))
+	}))
+	defer server.Close()
+
+	client := New(ClientOptions{
+		BaseURL:   server.URL,
+		UserID:    "user-123",
+		AuthToken: "token-abc",
+		Timeout:   30 * time.Second,
+	})
+
+	err := client.DeleteMessage(context.Background(), "room-1", "message-1")
+	if err == nil {
+		t.Fatal("expected error for response without success field")
 	}
 }
 
@@ -287,6 +394,35 @@ func TestDeleteMessageRetriesRateLimitBeforeSuccess(t *testing.T) {
 		UserID:    "user-123",
 		AuthToken: "token-abc",
 		Timeout:   30 * time.Second,
+	})
+
+	if err := client.DeleteMessage(context.Background(), "room-1", "message-1"); err != nil {
+		t.Fatalf("DeleteMessage returned error: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d", attempts)
+	}
+}
+
+func TestRateLimitWaitCanExceedPerRequestTimeout(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"success":false,"error":"Too many requests"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer server.Close()
+
+	client := New(ClientOptions{
+		BaseURL:   server.URL,
+		UserID:    "user-123",
+		AuthToken: "token-abc",
+		Timeout:   500 * time.Millisecond,
 	})
 
 	if err := client.DeleteMessage(context.Background(), "room-1", "message-1"); err != nil {

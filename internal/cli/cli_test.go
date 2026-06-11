@@ -105,6 +105,62 @@ func TestMainPrintsMessageModeOutput(t *testing.T) {
 	}
 }
 
+func TestMainWarnsWhenMaxMessagesLimitStoppedScan(t *testing.T) {
+	var stdout bytes.Buffer
+	exitCode := Main(context.Background(), []string{"--room", "general", "--mode", "messages", "--confirm-purge"}, cliEnv, &stdout, &bytes.Buffer{}, func(ctx context.Context, cfg config.Config) (purger.Summary, error) {
+		return testSummary(func(summary *purger.Summary) {
+			summary.DryRun = false
+			summary.MessageMode = true
+			summary.Succeeded = 1
+			summary.MessagesFound = 30
+			summary.MessagesDeleted = 30
+			summary.Results = []purger.Result{
+				{
+					Room:            rocketchat.Room{ID: "r1", Name: "general", Type: "c"},
+					Status:          purger.StatusSuccess,
+					MessagesFound:   30,
+					MessagesDeleted: 30,
+					LimitReached:    true,
+				},
+			}
+		}), nil
+	})
+
+	if exitCode != 0 {
+		t.Fatalf("exitCode = %d", exitCode)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "[success] channel general (r1): 30 deleted (stopped at max-messages limit, more of your messages may remain)") {
+		t.Fatalf("output missing max-messages warning: %s", output)
+	}
+}
+
+func TestMainWarnsWhenMaxMessagesLimitStoppedDryRunScan(t *testing.T) {
+	var stdout bytes.Buffer
+	exitCode := Main(context.Background(), []string{"--room", "general", "--mode", "messages"}, cliEnv, &stdout, &bytes.Buffer{}, func(ctx context.Context, cfg config.Config) (purger.Summary, error) {
+		return testSummary(func(summary *purger.Summary) {
+			summary.MessageMode = true
+			summary.MessagesFound = 30
+			summary.Results = []purger.Result{
+				{
+					Room:          rocketchat.Room{ID: "r1", Name: "general", Type: "c"},
+					Status:        purger.StatusDryRun,
+					MessagesFound: 30,
+					LimitReached:  true,
+				},
+			}
+		}), nil
+	})
+
+	if exitCode != 0 {
+		t.Fatalf("exitCode = %d", exitCode)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "[dry-run] channel general (r1): 30 messages (stopped at max-messages limit, more of your messages may remain)") {
+		t.Fatalf("output missing max-messages warning: %s", output)
+	}
+}
+
 func TestMainPrintsVerboseMessageDetails(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

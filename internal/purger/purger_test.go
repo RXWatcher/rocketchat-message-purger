@@ -181,6 +181,84 @@ func TestMessageModeConfirmedDeletesMessagesAndHonorsMaxMessages(t *testing.T) {
 	}
 }
 
+func TestMessageModeSkipsRemovedMessageTombstones(t *testing.T) {
+	client := &fakeClient{
+		messages: []rocketchat.Message{
+			{ID: "m1", RoomID: "r1", UserID: "user-123", Type: "rm"},
+			{ID: "m2", RoomID: "r1", UserID: "user-123"},
+		},
+	}
+
+	summary, err := Run(context.Background(), client, cfg(func(c *config.Config) {
+		c.Mode = "messages"
+		c.DryRun = false
+		c.ConfirmPurge = true
+	}), time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(client.deleteCalls) != 1 || client.deleteCalls[0] != (deleteCall{roomID: "r1", msgID: "m2"}) {
+		t.Fatalf("delete calls = %#v, want only m2", client.deleteCalls)
+	}
+	if summary.MessagesFound != 1 || summary.MessagesDeleted != 1 || summary.Failed != 0 {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
+func TestMessageModeFlagsResultWhenMaxMessagesLimitStopsScan(t *testing.T) {
+	client := &fakeClient{
+		messages: []rocketchat.Message{
+			{ID: "m1", RoomID: "r1", UserID: "user-123"},
+			{ID: "m2", RoomID: "r1", UserID: "user-123"},
+			{ID: "m3", RoomID: "r1", UserID: "user-123"},
+		},
+	}
+
+	summary, err := Run(context.Background(), client, cfg(func(c *config.Config) {
+		c.Mode = "messages"
+		c.DryRun = false
+		c.ConfirmPurge = true
+		c.MaxMessages = 2
+	}), time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(summary.Results) != 1 {
+		t.Fatalf("results = %#v", summary.Results)
+	}
+	if !summary.Results[0].LimitReached {
+		t.Fatal("LimitReached = false, want true when --max-messages stops the scan")
+	}
+}
+
+func TestMessageModeDoesNotFlagLimitWhenScanCompletes(t *testing.T) {
+	client := &fakeClient{
+		messages: []rocketchat.Message{
+			{ID: "m1", RoomID: "r1", UserID: "user-123"},
+			{ID: "m2", RoomID: "r1", UserID: "someone-else"},
+		},
+	}
+
+	summary, err := Run(context.Background(), client, cfg(func(c *config.Config) {
+		c.Mode = "messages"
+		c.DryRun = false
+		c.ConfirmPurge = true
+		c.MaxMessages = 5
+	}), time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(summary.Results) != 1 {
+		t.Fatalf("results = %#v", summary.Results)
+	}
+	if summary.Results[0].LimitReached {
+		t.Fatal("LimitReached = true, want false when the scan finishes under the limit")
+	}
+}
+
 func TestMessageModeKeepsFullPageSizeWhileLookingForMaxOwnMessages(t *testing.T) {
 	var counts []int
 	client := &fakeClient{

@@ -176,7 +176,11 @@ go run ./cmd/rocketchat-message-purger --room general --mode messages --max-mess
 
 `--verbose` streams scan progress, then `deleting message ...` and `deleted message ...` lines as each message delete runs. Message mode works as a find/delete cycle: find one of your messages, delete it, verify Rocket.Chat no longer returns that message ID, then query again for the next one. Use `--mode messages`; the default `history` mode uses Rocket.Chat's room history cleanup endpoint and does not delete one message at a time.
 
-If Rocket.Chat responds with HTTP `429 Too Many Requests`, the client waits for `Retry-After` when provided and retries the request. A message is not counted as deleted until the delete succeeds and the follow-up verification confirms the message ID is gone.
+If Rocket.Chat responds with HTTP `429 Too Many Requests`, the client waits for `Retry-After` when provided and retries the request. The `--timeout-ms` budget applies to each HTTP attempt, so a long `Retry-After` wait does not abort the retry. A message is not counted as deleted until the delete succeeds and the follow-up verification confirms the message is gone. Deleting a thread parent that still has replies leaves a Rocket.Chat `rm` tombstone with the same message ID; verification counts that as deleted, and later scans skip such tombstones. Any 2xx response that is not valid JSON with `"success": true` is treated as a failure rather than a successful delete.
+
+When `--max-messages` stops a room scan early, the room result is marked with `(stopped at max-messages limit, more of your messages may remain)` so a capped run is not mistaken for a complete purge.
+
+Messages inside threads are only found when `--include-threads` is set, and discussion rooms are only included with `--include-discussions`. Without those flags your thread replies and discussion messages are left in place even when a room reports success.
 
 All accessible channels and private rooms, excluding direct messages:
 

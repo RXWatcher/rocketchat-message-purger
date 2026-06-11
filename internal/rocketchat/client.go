@@ -40,9 +40,14 @@ type CleanRoomHistoryOptions struct {
 	ExcludePinned    bool
 }
 
+// RemovedMessageType marks the tombstone Rocket.Chat keeps in place of a
+// deleted message, e.g. a deleted thread parent that still has replies.
+const RemovedMessageType = "rm"
+
 type Message struct {
 	ID     string `json:"_id"`
 	RoomID string `json:"rid,omitempty"`
+	Type   string `json:"t,omitempty"`
 	UserID string
 	User   struct {
 		ID string `json:"_id"`
@@ -80,7 +85,11 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("Rocket.Chat %s %s failed with status %d: %s", e.Method, e.Endpoint, e.StatusCode, e.Detail)
+	detail := e.Detail
+	if detail == "" {
+		detail = "Unknown error"
+	}
+	return fmt.Sprintf("Rocket.Chat %s %s failed with status %d: %s", e.Method, e.Endpoint, e.StatusCode, detail)
 }
 
 func New(options ClientOptions) *Client {
@@ -198,12 +207,26 @@ func (c *Client) MessageExists(ctx context.Context, messageID string) (bool, err
 	err := c.request(ctx, http.MethodGet, "/api/v1/chat.getMessage?"+query.Encode(), nil, &response)
 	if err != nil {
 		apiErr, ok := err.(*APIError)
-		if ok && apiErr.StatusCode == http.StatusBadRequest {
+		if ok && apiErr.StatusCode == http.StatusBadRequest && isMissingMessageDetail(apiErr.Detail) {
 			return false, nil
 		}
 		return false, err
 	}
-	return response.Success && response.Message != nil && response.Message.ID != "", nil
+	if !response.Success || response.Message == nil || response.Message.ID == "" {
+		return false, nil
+	}
+	if response.Message.Type == RemovedMessageType {
+		return false, nil
+	}
+	return true, nil
+}
+
+// Rocket.Chat answers chat.getMessage for a deleted message with a bare
+// HTTP 400 {"success":false}, or in some versions an explicit "No message
+// found" error. A 400 with any other detail is a different failure and must
+// not be read as "message is gone".
+func isMissingMessageDetail(detail string) bool {
+	return detail == "" || strings.Contains(strings.ToLower(detail), "no message found")
 }
 
 func historyEndpoint(room Room) (string, error) {
@@ -229,71 +252,52 @@ func (c *Client) request(ctx context.Context, method string, endpoint string, bo
 		}
 	}
 
-	if c.timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, c.timeout)
-		defer cancel()
-	}
-
 	var lastAPIError *APIError
 	for attempt := 1; attempt <= maxRateLimitAttempts; attempt++ {
-		var reader io.Reader
-		if encodedBody != nil {
-			reader = bytes.NewReader(encodedBody)
-		}
-
-		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+endpoint, reader)
+		result, err := c.doAttempt(ctx, method, endpoint, encodedBody)
 		if err != nil {
 			return err
 		}
-		req.Header.Set("X-Auth-Token", c.authToken)
-		req.Header.Set("X-User-Id", c.userID)
-		req.Header.Set("Content-Type", "application/json")
 
-		c.debugRequest(method, endpoint)
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			c.debugTransportError(method, endpoint, err)
-			return err
-		}
-
-		var raw map[string]any
-		if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-			raw = map[string]any{}
-		}
-		_ = resp.Body.Close()
-
-		success, hasSuccess := raw["success"].(bool)
-		responseDetail, hasDetail := responseDetail(raw)
-		c.debugResponse(method, endpoint, resp.StatusCode, success, hasSuccess, responseDetail, hasDetail)
-		if resp.StatusCode == http.StatusTooManyRequests {
+		success, hasSuccess := result.raw["success"].(bool)
+		responseDetail, hasDetail := responseDetail(result.raw)
+		c.debugResponse(method, endpoint, result.statusCode, success, hasSuccess, responseDetail, hasDetail)
+		if result.statusCode == http.StatusTooManyRequests {
 			lastAPIError = &APIError{
 				Method:     method,
 				Endpoint:   endpoint,
-				StatusCode: resp.StatusCode,
-				Detail:     detail(raw),
+				StatusCode: result.statusCode,
+				Detail:     detail(result.raw),
 			}
 			if attempt < maxRateLimitAttempts {
-				if err := sleepBeforeRetry(ctx, retryAfter(resp.Header.Get("Retry-After"))); err != nil {
+				if err := sleepBeforeRetry(ctx, retryAfter(result.retryAfter)); err != nil {
 					return err
 				}
 				continue
 			}
 			return lastAPIError
 		}
-		if !respOK(resp.StatusCode) || (hasSuccess && !success) {
+		if !respOK(result.statusCode) || !success {
+			responseProblem := detail(result.raw)
+			if respOK(result.statusCode) && responseProblem == "" {
+				if result.decodeErr != nil {
+					responseProblem = "response body is not valid JSON"
+				} else if !hasSuccess {
+					responseProblem = `response is missing the "success" field`
+				}
+			}
 			return &APIError{
 				Method:     method,
 				Endpoint:   endpoint,
-				StatusCode: resp.StatusCode,
-				Detail:     detail(raw),
+				StatusCode: result.statusCode,
+				Detail:     responseProblem,
 			}
 		}
 
 		if target == nil {
 			return nil
 		}
-		encoded, err := json.Marshal(raw)
+		encoded, err := json.Marshal(result.raw)
 		if err != nil {
 			return err
 		}
@@ -301,6 +305,57 @@ func (c *Client) request(ctx context.Context, method string, endpoint string, bo
 	}
 
 	return lastAPIError
+}
+
+type attemptResult struct {
+	statusCode int
+	retryAfter string
+	raw        map[string]any
+	decodeErr  error
+}
+
+// The configured timeout bounds one HTTP attempt. Retry-After waits between
+// rate-limited attempts run on the caller's context so they are not cut short
+// by the per-attempt budget.
+func (c *Client) doAttempt(ctx context.Context, method string, endpoint string, encodedBody []byte) (attemptResult, error) {
+	if c.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+	}
+
+	var reader io.Reader
+	if encodedBody != nil {
+		reader = bytes.NewReader(encodedBody)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+endpoint, reader)
+	if err != nil {
+		return attemptResult{}, err
+	}
+	req.Header.Set("X-Auth-Token", c.authToken)
+	req.Header.Set("X-User-Id", c.userID)
+	req.Header.Set("Content-Type", "application/json")
+
+	c.debugRequest(method, endpoint)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		c.debugTransportError(method, endpoint, err)
+		return attemptResult{}, err
+	}
+
+	var raw map[string]any
+	decodeErr := json.NewDecoder(resp.Body).Decode(&raw)
+	if decodeErr != nil {
+		raw = map[string]any{}
+	}
+	_ = resp.Body.Close()
+
+	return attemptResult{
+		statusCode: resp.StatusCode,
+		retryAfter: resp.Header.Get("Retry-After"),
+		raw:        raw,
+		decodeErr:  decodeErr,
+	}, nil
 }
 
 func retryAfter(value string) time.Duration {
@@ -398,7 +453,7 @@ func detail(raw map[string]any) string {
 	if value, ok := responseDetail(raw); ok {
 		return value
 	}
-	return "Unknown error"
+	return ""
 }
 
 func responseDetail(raw map[string]any) (string, bool) {
