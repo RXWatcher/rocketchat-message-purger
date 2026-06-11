@@ -202,6 +202,10 @@ func purgeMessagesInRoom(ctx context.Context, client Client, cfg config.Config, 
 				result.FailedMessageIDs = append(result.FailedMessageIDs, message.ID)
 				result.Error = err.Error()
 				printVerboseDelete(cfg, room, message.ID, "failed", err)
+				if rocketchat.IsRoomReadOnly(err) {
+					result.Status = StatusFailed
+					return result
+				}
 				continue
 			}
 			exists, err := client.MessageExists(ctx, message.ID)

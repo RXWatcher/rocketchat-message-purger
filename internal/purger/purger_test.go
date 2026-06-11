@@ -493,6 +493,43 @@ func TestMessageModeDeletesConsecutiveOwnMessagesOnSamePage(t *testing.T) {
 	}
 }
 
+func TestMessageModeAbandonsRoomOnFirstReadOnlyError(t *testing.T) {
+	client := &fakeClient{
+		messages: []rocketchat.Message{
+			{ID: "m1", RoomID: "r1", UserID: "user-123"},
+			{ID: "m2", RoomID: "r1", UserID: "user-123"},
+			{ID: "m3", RoomID: "r1", UserID: "user-123"},
+		},
+		deleteFn: func(roomID string, msgID string) error {
+			return &rocketchat.APIError{
+				Method:     "POST",
+				Endpoint:   "/api/v1/chat.delete",
+				StatusCode: 400,
+				Detail:     "You can't delete messages because the room is readonly.",
+			}
+		},
+	}
+
+	summary, err := Run(context.Background(), client, cfg(func(c *config.Config) {
+		c.Mode = "messages"
+		c.DryRun = false
+		c.ConfirmPurge = true
+	}), time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(client.deleteCalls) != 1 {
+		t.Fatalf("delete calls = %d, want 1: a readonly room fails every delete identically", len(client.deleteCalls))
+	}
+	if len(summary.Results) != 1 || summary.Results[0].Status != StatusFailed {
+		t.Fatalf("results = %#v", summary.Results)
+	}
+	if !strings.Contains(summary.Results[0].Error, "room is readonly") {
+		t.Fatalf("error = %q", summary.Results[0].Error)
+	}
+}
+
 func TestMessageModeRecordsDeleteFailuresAndContinues(t *testing.T) {
 	client := &fakeClient{
 		messages: []rocketchat.Message{

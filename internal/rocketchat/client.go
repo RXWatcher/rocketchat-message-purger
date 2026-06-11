@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -224,6 +225,17 @@ func (c *Client) MessageExists(ctx context.Context, messageID string) (bool, err
 		return false, nil
 	}
 	return true, nil
+}
+
+// IsRoomReadOnly reports whether the error is Rocket.Chat refusing a delete
+// because the whole room is read-only. Every delete in that room will fail
+// the same way, so callers can stop trying the room's remaining messages.
+func IsRoomReadOnly(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(apiErr.Detail), "room is readonly")
 }
 
 // Rocket.Chat answers chat.getMessage for a deleted message with a bare

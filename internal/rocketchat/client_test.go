@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -560,6 +561,24 @@ func TestSuccessFalseOnOKResponseIsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "status 200: No permission") {
 		t.Fatalf("err = %q", err.Error())
+	}
+}
+
+func TestIsRoomReadOnly(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{&APIError{StatusCode: 400, Detail: "You can't delete messages because the room is readonly."}, true},
+		{&APIError{StatusCode: 400, Detail: "EACCES: permission denied, unlink '/filesystem/fileupload/abc'"}, false},
+		{&APIError{StatusCode: 429, Detail: "Too many requests"}, false},
+		{errors.New("plain error mentioning room is readonly"), false},
+		{nil, false},
+	}
+	for _, tc := range cases {
+		if got := IsRoomReadOnly(tc.err); got != tc.want {
+			t.Fatalf("IsRoomReadOnly(%v) = %t, want %t", tc.err, got, tc.want)
+		}
 	}
 }
 
