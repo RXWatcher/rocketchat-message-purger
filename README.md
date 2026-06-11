@@ -176,6 +176,8 @@ go run ./cmd/rocketchat-message-purger --room general --mode messages --max-mess
 
 `--verbose` streams scan progress, then `deleting message ...` and `deleted message ...` lines as each message delete runs. Message mode works as a find/delete cycle: find one of your messages, delete it, verify Rocket.Chat no longer returns that message ID, then query again for the next one. Use `--mode messages`; the default `history` mode uses Rocket.Chat's room history cleanup endpoint and does not delete one message at a time.
 
+If Rocket.Chat responds with HTTP `429 Too Many Requests`, the client waits for `Retry-After` when provided and retries the request. A message is not counted as deleted until the delete succeeds and the follow-up verification confirms the message ID is gone.
+
 All accessible channels and private rooms, excluding direct messages:
 
 ```bash

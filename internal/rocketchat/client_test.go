@@ -268,6 +268,68 @@ func TestDebugLoggingShowsDeleteRequestAndResponseWithoutToken(t *testing.T) {
 	}
 }
 
+func TestDeleteMessageRetriesRateLimitBeforeSuccess(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"success":false,"error":"Too many requests"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer server.Close()
+
+	client := New(ClientOptions{
+		BaseURL:   server.URL,
+		UserID:    "user-123",
+		AuthToken: "token-abc",
+		Timeout:   30 * time.Second,
+	})
+
+	if err := client.DeleteMessage(context.Background(), "room-1", "message-1"); err != nil {
+		t.Fatalf("DeleteMessage returned error: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d", attempts)
+	}
+}
+
+func TestDeleteMessageReturnsErrorWhenRateLimitPersists(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"success":false,"error":"Too many requests"}`))
+	}))
+	defer server.Close()
+
+	client := New(ClientOptions{
+		BaseURL:   server.URL,
+		UserID:    "user-123",
+		AuthToken: "token-abc",
+		Timeout:   30 * time.Second,
+	})
+
+	err := client.DeleteMessage(context.Background(), "room-1", "message-1")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	apiErr, ok := err.(*APIError)
+	if !ok {
+		t.Fatalf("err type = %T", err)
+	}
+	if apiErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("apiErr = %#v", apiErr)
+	}
+	if attempts != 4 {
+		t.Fatalf("attempts = %d", attempts)
+	}
+}
+
 func TestAPIErrorForUnsuccessfulResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)

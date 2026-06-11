@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+const maxRateLimitAttempts = 4
+
 type Room struct {
 	ID    string `json:"_id"`
 	Name  string `json:"name,omitempty"`
@@ -218,13 +220,13 @@ func historyEndpoint(room Room) (string, error) {
 }
 
 func (c *Client) request(ctx context.Context, method string, endpoint string, body any, target any) error {
-	var reader io.Reader
+	var encodedBody []byte
+	var err error
 	if body != nil {
-		encoded, err := json.Marshal(body)
+		encodedBody, err = json.Marshal(body)
 		if err != nil {
 			return err
 		}
-		reader = bytes.NewReader(encoded)
 	}
 
 	if c.timeout > 0 {
@@ -233,46 +235,108 @@ func (c *Client) request(ctx context.Context, method string, endpoint string, bo
 		defer cancel()
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+endpoint, reader)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("X-Auth-Token", c.authToken)
-	req.Header.Set("X-User-Id", c.userID)
-	req.Header.Set("Content-Type", "application/json")
-
-	c.debugRequest(method, endpoint)
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		c.debugTransportError(method, endpoint, err)
-		return err
-	}
-	defer resp.Body.Close()
-
-	var raw map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		raw = map[string]any{}
-	}
-	success, hasSuccess := raw["success"].(bool)
-	responseDetail, hasDetail := responseDetail(raw)
-	c.debugResponse(method, endpoint, resp.StatusCode, success, hasSuccess, responseDetail, hasDetail)
-	if !respOK(resp.StatusCode) || (hasSuccess && !success) {
-		return &APIError{
-			Method:     method,
-			Endpoint:   endpoint,
-			StatusCode: resp.StatusCode,
-			Detail:     detail(raw),
+	var lastAPIError *APIError
+	for attempt := 1; attempt <= maxRateLimitAttempts; attempt++ {
+		var reader io.Reader
+		if encodedBody != nil {
+			reader = bytes.NewReader(encodedBody)
 		}
+
+		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+endpoint, reader)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("X-Auth-Token", c.authToken)
+		req.Header.Set("X-User-Id", c.userID)
+		req.Header.Set("Content-Type", "application/json")
+
+		c.debugRequest(method, endpoint)
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			c.debugTransportError(method, endpoint, err)
+			return err
+		}
+
+		var raw map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+			raw = map[string]any{}
+		}
+		_ = resp.Body.Close()
+
+		success, hasSuccess := raw["success"].(bool)
+		responseDetail, hasDetail := responseDetail(raw)
+		c.debugResponse(method, endpoint, resp.StatusCode, success, hasSuccess, responseDetail, hasDetail)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			lastAPIError = &APIError{
+				Method:     method,
+				Endpoint:   endpoint,
+				StatusCode: resp.StatusCode,
+				Detail:     detail(raw),
+			}
+			if attempt < maxRateLimitAttempts {
+				if err := sleepBeforeRetry(ctx, retryAfter(resp.Header.Get("Retry-After"))); err != nil {
+					return err
+				}
+				continue
+			}
+			return lastAPIError
+		}
+		if !respOK(resp.StatusCode) || (hasSuccess && !success) {
+			return &APIError{
+				Method:     method,
+				Endpoint:   endpoint,
+				StatusCode: resp.StatusCode,
+				Detail:     detail(raw),
+			}
+		}
+
+		if target == nil {
+			return nil
+		}
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(encoded, target)
 	}
 
-	if target == nil {
+	return lastAPIError
+}
+
+func retryAfter(value string) time.Duration {
+	if value == "" {
+		return time.Second
+	}
+	seconds, err := strconv.Atoi(value)
+	if err == nil {
+		if seconds < 0 {
+			return 0
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	when, err := http.ParseTime(value)
+	if err != nil {
+		return time.Second
+	}
+	delay := time.Until(when)
+	if delay < 0 {
+		return 0
+	}
+	return delay
+}
+
+func sleepBeforeRetry(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
 		return nil
 	}
-	encoded, err := json.Marshal(raw)
-	if err != nil {
-		return err
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	return json.Unmarshal(encoded, target)
 }
 
 func (c *Client) debugRequest(method string, endpoint string) {
